@@ -9,14 +9,13 @@ backward pass that computes gradients and updates parameters.
 The price for lower memory consumption roughly amounts to a **second forward pass**, plus data transfers between GPU and 
 main memory.
 
-**Note that PartialFlow is considered experimental.**
+**Note that PartialFlow is considered experimental.** Please report bugs in the GitHub issue tracker.
 
-#### How to use
----------
+
+## How to use
 Check out the [MNIST Example Notebook](MNIST-example.ipynb) for an introduction.
 
-#### How it works
----------
+## How it works
 PartialFlow allows you to split the graph into multiple *sections* that are trained separately. It automatically 
 analyzes the data flow between the sections, caches intermediate results as needed, and 
 abstracts away the logic of running forward and backward passes over multiple sections.
@@ -26,6 +25,5 @@ inputs. It then runs separate backward passes over all sections in reversed orde
 following sections. A section's backward pass may include a second forward pass, as gradient computations often
  requires intermediate results computed inside a section.
  
-### License
----------
+## License
 MIT
