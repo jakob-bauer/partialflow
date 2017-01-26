@@ -1,5 +1,5 @@
 **PartialFlow** is a lightweight extension to [TensorFlow](https://www.tensorflow.org) that simplifies the training of 
-large computational graphs on graphic cards with limited memory resources. It allows you to **trade off** additional 
+large neural networks on graphic cards with limited memory resources. It allows to **trade off** additional 
 computation **time** for lower **memory** consumption.
 
 PartialFlow was primarily designed with back-propagation on neural networks in mind. It therefore assumes
@@ -16,8 +16,8 @@ main memory.
 Check out the [MNIST Example Notebook](MNIST-example.ipynb) for an introduction.
 
 ## How it works
-PartialFlow allows you to split the graph into multiple *sections* that are trained separately. It automatically 
-analyzes the data flow between the sections, caches intermediate results as needed, and 
+PartialFlow allows to split the graph into multiple *sections* that are trained separately. It automatically 
+analyzes the data flow between sections, caches intermediate results as needed, and 
 abstracts away the logic of running forward and backward passes over multiple sections.
 
 For a training cycle, PartialFlow first runs a forward pass over the graph and caches each section's 
