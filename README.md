@@ -11,9 +11,15 @@ main memory.
 
 **Note that PartialFlow is considered experimental.** Please report bugs in the GitHub issue tracker.
 
+Tested with Tensorflow v0.12.1, not yet tested with Tensorflow v1.0.
+
 
 ## How to use
 Check out the [MNIST Example Notebook](MNIST-example.ipynb) for an introduction.
+
+## Comparison with basic Training
+Take a look at the [Sanity Check Notebook](Sanity-Check.ipynb) for a simple comparison between a network training with 
+and without PartialFlow. We compare training progress and update duration.
 
 ## How it works
 PartialFlow allows to split the graph into multiple *sections* that are trained separately. It automatically 
