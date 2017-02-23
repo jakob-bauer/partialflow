@@ -204,25 +204,29 @@ class GraphSectionManager(object):
 
         return results
 
-    def run_backward(self, sess, fetches=None):
+    def run_backward(self, sess, fetches=None, basic_feed=None):
         """
         Runs section-wise training pass over the graph, caches intermediate results as defined by sections.
 
         :param sess: session to run in
         :param fetches: list of fetches for each section.
                         Tensors in i-th sub-list are fetched in backward pass of i-th section
+        :param basic_feed:
         :return: list of results, same structure as `fetches`
         """
         results = []
         if fetches is None:
             fetches = [[] for _ in self.get_sections()]
 
+        if basic_feed is None:
+            basic_feed = {}
+
         for s, section in reversed(list(enumerate(self.get_sections()))):
             # cache intermediate results to be used in other sections
             tensors_to_cache = list(section.get_tensors_to_cache())
 
             # construct feed dictionary
-            feed = {}
+            feed = basic_feed.copy()
             for t in list(section.get_tensors_to_feed()):
                 feed[t] = self._cache[t]
 
@@ -264,7 +268,7 @@ class GraphSectionManager(object):
 
             # run cycle
             fwd_values = self.run_forward(sess, fwd_requests, basic_feed=basic_feed)
-            bwd_values = self.run_backward(sess, bwd_requests)
+            bwd_values = self.run_backward(sess, bwd_requests, basic_feed=basic_feed)
 
             # reconstruct output
             flat_requests = _flatten_list([fwd_requests, bwd_requests])
