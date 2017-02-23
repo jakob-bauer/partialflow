@@ -15,7 +15,36 @@ Tested with Tensorflow v0.12.1, not yet tested with Tensorflow v1.0.
 
 
 ## How to use
-Check out the [MNIST Example Notebook](MNIST-example.ipynb) for an introduction.
+Please read the [MNIST Example Notebook](MNIST-example.ipynb) for an introduction.
+
+### Subtleties
+There are some subtleties when it comes to training a neural network with partial evaluations. Although PartialFlow takes
+ care of some of them, some (still) need to be considered during development.
+
+#### Caching
+PartialFlow caches the _inputs_ to each graph section in a first forward pass and reuses them during the 
+backward pass. It should therefore be ensured that all Tensors for which multiple evaluations may result in different values
+are only used as input to a section (and hence cached).
+
+**Problematic Example**: A batch queue is used for loading and processing of input images and labels. If the network's 
+loss is defined outside the graph sections, the labels will not be cached during the forward pass, whereas the input 
+images will be. In the backward pass the images are reused, but new labels are be drawn from the batch queue. This 
+results in inconsistent loss and gradient information.
+
+**Solution**: Define queues outside the graph's sections and all operations on their outputs inside (e.g. first layer, loss). In 
+general, do not use Tensors outside of graph sections if their values change across multiple evaluations.
+
+#### Batch Normalization
+PartialFlow generates a single training operation for each section, which only computes and applies the gradients for
+the corresponding part of the graph. There might be other operations that need to be run during training, e.g. moving 
+average updates for batch normalization. PartialFlow groups all operations in the section's `UPDATE_OPS` collection
+and runs them exactly once during the section's backward pass.
+
+**Problematic Example**: A network architecture enforces updates of moving averages during the forward pass of the network.
+This can e.g. be achieved by explicitly defining the operations as dependencies. Since PartialFlow runs multiple forward
+passes over each section, those updates might or might not be executed multiple times.
+
+**Solution**: Use the `UPDATE_OPS` graph collection for operations that need to be run once for each training batch.
 
 ## Comparison with basic Training
 Take a look at the [Sanity Check Notebook](Sanity-Check.ipynb) for a simple comparison between a network training with 
