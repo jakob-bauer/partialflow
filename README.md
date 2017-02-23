@@ -43,11 +43,12 @@ are only used as input to a section (and hence cached).
 
 **Problematic Example**: A batch queue is used for loading and processing of input images and labels. If the network's 
 loss is defined outside the graph sections, the labels will not be cached during the forward pass, whereas the input 
-images will be. In the backward pass the images are reused, but new labels are be drawn from the batch queue. This 
+images will be. In the backward pass the images are reused, but new labels are drawn from the batch queue. This 
 results in inconsistent loss and gradient information.
 
 **Solution**: Define queues outside the graph's sections and all operations on their outputs inside (e.g. first layer, loss). In 
-general, do not use Tensors outside of graph sections if their values change across multiple evaluations.
+general, do not use tensors outside of graph sections if their values change across multiple evaluations.
+Keep in mind that each section's forward pass might be run multiple times, with only the section's input kept fixed.
 
 ### Batch Normalization
 PartialFlow generates a single training operation for each section, which only computes and applies the gradients for
