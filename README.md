@@ -29,7 +29,7 @@ abstracts away the logic of running forward and backward passes over multiple se
 For a training cycle, PartialFlow first runs a forward pass over the graph and caches each section's 
 inputs. It then runs separate backward passes over all sections in reversed order and caches gradient values needed for 
 following sections. A section's backward pass may include a second forward pass, as gradient computations often
- requires intermediate results computed inside a section.
+ require intermediate results computed inside a section.
  
 ## License
 MIT
