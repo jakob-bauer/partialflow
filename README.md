@@ -38,7 +38,7 @@ There are some subtleties when it comes to training a neural network with partia
 
 ### Caching
 PartialFlow caches the _inputs_ to each graph section in a first forward pass and reuses them during the 
-backward pass. It should therefore be ensured that all Tensors for which multiple evaluations may result in different values
+backward pass. It should therefore be ensured that all tensors for which multiple evaluations may result in different values
 are only used as input to a section (and hence cached).
 
 **Problematic Example**: A batch queue is used for loading and processing of input images and labels. If the network's 
