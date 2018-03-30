@@ -1,6 +1,8 @@
 import tensorflow as tf
 from .sections import GraphSection, section_from_name
 from tensorflow.python.client.session import _FetchMapper
+from .utils import VerboseTimer
+from contextlib import ExitStack
 
 
 def _flatten_list(nested_list):
@@ -38,6 +40,11 @@ class GraphSectionManager(object):
 
         # which tensors to cache during full forward pass
         self._tensors_to_cache_in_fwd = []
+
+        # caches for request op information
+        self._req_input_tensors = {}  # requested op -> [list of input tensors]
+        self._req_eval_sections = {}  # requested op -> section to evaluate in (or None for forward pass)
+        self._req_reduced_inputs = {}  # requested op -> [list of input tensors minus those from eval_section]
 
 
     ####################################################################################################################
@@ -77,7 +84,8 @@ class GraphSectionManager(object):
     # Methods to prepare the graph for training
     ####################################################################################################################
 
-    def add_training_ops(self, optimizer, loss=None, var_list=None, grads=None, global_step=None, verbose=False):
+    def add_training_ops(self, optimizer, loss=None, var_list=None, grads=None, global_step=None, verbose=False,
+                         summaries=None):
         """
         Constructs a training operation for each section. If `grads` is not given, it is computed by
             grads = optimizer.compute_gradients(loss, var_list)
@@ -92,6 +100,7 @@ class GraphSectionManager(object):
         :param grads: gradients as returned by optimizer.compute_gradients, alternative to loss and var_list
         :param global_step: global step tensor to increment after full backward pass
         :param verbose: if True, adds tf.Print operations to log backward passes over sections
+        :param summaries: optional list of collections to add gradient histogram summaries to. Defaults to None
         """
 
         # add gradient computation nodes for all trainable variables
@@ -109,6 +118,10 @@ class GraphSectionManager(object):
             if len(xs) > 0:
                 cur_grads = [(grad_dict[v], v) for v in xs]
 
+                if summaries is not None:
+                    for v in xs:
+                        tf.summary.histogram('gradients/%s' + v.name, grad_dict[v], collections=summaries)
+
                 # if we should be verbose, log backward passes
                 if verbose:
                     cur_grads[0] = (tf.Print(cur_grads[0][0], [cur_grads[0][0]],
@@ -117,15 +130,26 @@ class GraphSectionManager(object):
                 # only increment global step in last partial backward pass
                 apply_op = optimizer.apply_gradients(cur_grads, global_step=global_step if s == 0 else None)
 
-            # no gradients to apply in last backward pass -> need to increment global step separately
-            elif s == 0 and global_step is not None:
-                apply_op = tf.assign_add(global_step, 1)
+                print("Found %d gradient application operations in section %d. Adding to training op."
+                      % (len(cur_grads), s))
+
+            # no gradients to apply
+            else:
+                print("Section %d does not contain gradient application operations." % s)
+
+                # in last section's backward pass -> need to increment global step separately
+                if s == 0 and global_step is not None:
+                    apply_op = tf.assign_add(global_step, 1)
+
 
             # group update operations
             update_op = None
             update_ops = section.get_collection(tf.GraphKeys.UPDATE_OPS)
             if len(update_ops) > 0:
+                print("Found %d update operations in section %d. Adding to training op." % (len(update_ops), s))
                 update_op = tf.group(*update_ops)
+            else:
+                print("Section %d does not contain update operations." % s)
 
             # construct final training operation
             if apply_op is not None and update_op is not None:
@@ -204,37 +228,37 @@ class GraphSectionManager(object):
 
         return results
 
-    def run_backward(self, sess, fetches=None, basic_feed=None):
+    def run_backward(self, sess, fetches=None, verbose_timing=False):
         """
         Runs section-wise training pass over the graph, caches intermediate results as defined by sections.
 
         :param sess: session to run in
         :param fetches: list of fetches for each section.
                         Tensors in i-th sub-list are fetched in backward pass of i-th section
-        :param basic_feed:
+        :param verbose_timing: if True, time forward and backward passes verbosely
         :return: list of results, same structure as `fetches`
         """
         results = []
         if fetches is None:
             fetches = [[] for _ in self.get_sections()]
 
-        if basic_feed is None:
-            basic_feed = {}
+        timer = VerboseTimer if verbose_timing else lambda _: ExitStack()
 
         for s, section in reversed(list(enumerate(self.get_sections()))):
             # cache intermediate results to be used in other sections
             tensors_to_cache = list(section.get_tensors_to_cache())
 
             # construct feed dictionary
-            feed = basic_feed.copy()
+            feed = {}
             for t in list(section.get_tensors_to_feed()):
                 feed[t] = self._cache[t]
 
             request = fetches[s] if len(fetches) > s else []
             tensors_to_compute = [section.get_training_op(), tensors_to_cache, request]
 
-            # with utils.VerboseTimer('backward on section %d' % s):
-            _, cache_vals, result = sess.run(tensors_to_compute, feed)
+            with timer('backward on section %d' % s):
+                _, cache_vals, result = sess.run(tensors_to_compute, feed)
+
             results.append(result)
 
             # store all computed values in cache
@@ -245,7 +269,7 @@ class GraphSectionManager(object):
 
         return results
 
-    def run_full_cycle(self, sess, fetches=None, basic_feed=None):
+    def run_full_cycle(self, sess, fetches=None, basic_feed=None, verbose_timing=False):
         """
         Runs forward and backward pass through the graph and fetches results, similar to session.run().
         Mimics tensorflow's session.run for structure of fetches and returned values.
@@ -253,6 +277,7 @@ class GraphSectionManager(object):
         :param sess: session to run in
         :param fetches: arbitrarily nested structure of graph elements to fetch
         :param basic_feed: dictionary of tensors/placeholders and values to feed into the graph
+        :param verbose_timing: if True, time forward and backward passes verbosely
         :return: resulting values for fetches
         """
         if fetches is None:
@@ -261,25 +286,32 @@ class GraphSectionManager(object):
         if basic_feed is None:
             basic_feed = {}
 
+        timer = VerboseTimer if verbose_timing else lambda _: ExitStack()
+
         # multiple GraphSections -> train step-wise
         if len(self.get_sections()) > 1:
             # for all requested tensors, find sections in which they are computed
-            unique_fetches, fwd_requests, bwd_requests, fetch_mapper = self._split_requests_for_sections(fetches)
+            with timer('split fetches'):
+                unique_fetches, fwd_requests, bwd_requests, fetch_mapper = self._split_requests_for_sections(fetches)
 
             # run cycle
-            fwd_values = self.run_forward(sess, fwd_requests, basic_feed=basic_feed)
-            bwd_values = self.run_backward(sess, bwd_requests, basic_feed=basic_feed)
+            with timer('forward'):
+                fwd_values = self.run_forward(sess, fwd_requests, basic_feed=basic_feed)
 
-            # reconstruct output
-            flat_requests = _flatten_list([fwd_requests, bwd_requests])
-            flat_values = _flatten_list([fwd_values, bwd_values])
-            req_val = list(zip(flat_requests, flat_values))
-            values = [e[1] for fetch in unique_fetches for e in req_val if e[0] == fetch]
-            results = fetch_mapper.build_results(values)
+            with timer('backward'):
+                bwd_values = self.run_backward(sess, bwd_requests, verbose_timing=verbose_timing)
 
-            # clean intermediate cache fetches
-            for section in self.get_sections():
-                section.cleanup_after_cycle()
+            with timer('post cycle'):
+                # reconstruct output
+                flat_requests = _flatten_list([fwd_requests, bwd_requests])
+                flat_values = _flatten_list([fwd_values, bwd_values])
+                req_val = list(zip(flat_requests, flat_values))
+                values = [e[1] for fetch in unique_fetches for e in req_val if e[0] == fetch]
+                results = fetch_mapper.build_results(values)
+
+                # clean intermediate cache fetches
+                for section in self.get_sections():
+                    section.cleanup_after_cycle()
 
         # only a single GraphSection (no real splits) -> fall back to default training in one go
         else:
@@ -306,14 +338,17 @@ class GraphSectionManager(object):
 
         for fetch in unique_fetches:
             fetch_op = fetch if isinstance(fetch, tf.Operation) else fetch.op
-
             section = self._get_op_section(fetch_op)
-
-            # TODO: cache results to avoid graph traversal in every run
-            input_tensors = self._find_feeds_from_other_sections(fetch_op)
-
             sections.append(section)
-            all_input_tensors.update(input_tensors)
+
+            # check cache for pre-computed input tensors
+            if fetch_op in self._req_input_tensors:
+                input_tensors = self._req_input_tensors[fetch_op]
+
+            # not cached, compute and store
+            else:
+                input_tensors = self._find_feeds_from_other_sections(fetch_op)
+                self._req_input_tensors[fetch_op] = input_tensors
 
             # fetch independent from all sections? -> evaluate in first general forward pass
             if section is None and len(input_tensors) == 0:
@@ -322,18 +357,30 @@ class GraphSectionManager(object):
 
             # fetch depends on at least one section
             else:
-                # fetch is part of an section? -> evaluate in backward pass of this section (includes forward pass)
-                if section is not None:
-                    eval_section = section
+                # not yet cached
+                if fetch_op not in self._req_eval_sections:
+                    # fetch is part of a section? -> evaluate in backward pass of this section (includes forward pass)
+                    if section is not None:
+                        eval_section = section
 
-                elif section is None:
-                    # select the last section this fetch depends on, in order of backward pass
-                    eval_section = min([a for t, a in input_tensors], key=lambda a: a.get_index())
+                    # fetch is not part of any section
+                    elif section is None:
+                        # select the last section this fetch depends on, in order of backward pass
+                        eval_section = min([a for t, a in input_tensors], key=lambda a: a.get_index())
 
-                    # remove input tensors inside this section, since they are evaluated anyway
-                    input_tensors = self._find_feeds_from_other_sections(fetch_op, ignore=[eval_section])
+                        # remove input tensors inside this section, since they are evaluated anyway
+                        input_tensors = self._find_feeds_from_other_sections(fetch_op, ignore=[eval_section])
 
-                # print('will evaluate ', fetch, 'in backward pass of section %d' % eval_section.get_index())
+                    # print('will evaluate ', fetch, 'in backward pass of section %d' % eval_section.get_index())
+
+                    # cache infos
+                    self._req_eval_sections[fetch_op] = eval_section
+                    self._req_reduced_inputs[fetch_op] = input_tensors
+
+                # load data from cache
+                else:
+                    eval_section = self._req_eval_sections[fetch_op]
+                    input_tensors = self._req_reduced_inputs[fetch_op]
 
                 # fetch from backward pass of determined section
                 backward_fetches[eval_section.get_index()].append(fetch)
@@ -341,6 +388,7 @@ class GraphSectionManager(object):
                 # needs input from other sections
                 if len(input_tensors) > 0:
                     eval_section.add_tensors_to_feed([t[0] for t in input_tensors], only_next_run=True)
+                    all_input_tensors.update(input_tensors)
 
         # store which tensors need to be cached
         # print('will cache', all_input_tensors)
